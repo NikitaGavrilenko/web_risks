@@ -1,8 +1,6 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import './index.css';
 import Login from './Login.tsx';
-import RiskDetails from './RiskDetails.tsx';
-import DetailedRisks from './DetailedRisks.tsx';
 
 // Определяем интерфейсы для наших данных
 interface Process {
@@ -64,12 +62,22 @@ interface DetailedRiskReport {
   as_reserved_in_rcod: string;
 }
 
+interface GraphNode {
+  id: string;
+  type: 'process' | 'threat';
+  x: number;
+  y: number;
+  data: Process | Threat;
+  connections: string[];
+}
+
+// Компонент поиска процессов
 const ProcessSearch: React.FC<{ onSearch: (query: string) => void }> = ({ onSearch }) => {
   return (
     <div className="search-container">
       <input
         type="text"
-        placeholder="Поиск по названию или коду процесса..."
+        placeholder="Поиск процессов..."
         onChange={(e) => onSearch(e.target.value)}
         className="search-input"
       />
@@ -77,75 +85,241 @@ const ProcessSearch: React.FC<{ onSearch: (query: string) => void }> = ({ onSear
   );
 };
 
-const roundMetricValue = (value: number): number => {
-  if (value < 1) {
-    return Math.round(value * 10) / 10;
-  }
-  return Math.round(value);
-};
-
-const TimeMetricsVisualizer: React.FC<{
-  rto: number;
-  mtpd: number;
-  tr: number;
-}> = ({ rto, mtpd, tr }) => {
-  const mtpdCritical = roundMetricValue(mtpd * 1.3);
-  const maxHours = Math.max(rto, mtpd, tr, mtpdCritical);
-
-  const getTimelineLabels = (maxHours: number): number[] => {
-    if (maxHours <= 1) return [0, 0.2, 0.4, 0.6, 0.8, 1];
-    if (maxHours <= 2) return [0, 0.5, 1, 1.5, 2];
-    if (maxHours <= 4) return [0, 1, 2, 3, 4];
-    if (maxHours <= 8) return [0, 2, 4, 6, 8];
-    if (maxHours <= 12) return [0, 3, 6, 9, 12];
-    if (maxHours <= 24) return [0, 6, 12, 18, 24];
-    const step = maxHours / 5;
-    return [0, step, step * 2, step * 3, step * 4, maxHours];
+// Компонент графового узла
+const GraphNode: React.FC<{
+  node: GraphNode;
+  isSelected: boolean;
+  onClick: () => void;
+}> = ({ node, isSelected, onClick }) => {
+  const getRiskClass = (threat: Threat) => {
+    const level = threat.integral_risk_level?.toLowerCase() || '';
+    if (level.includes('критический') || level.includes('высокий')) return 'high-risk';
+    if (level.includes('средний')) return 'medium-risk';
+    if (level.includes('низкий')) return 'low-risk';
+    return '';
   };
 
-  const timeLabels = getTimelineLabels(maxHours);
+  return (
+    <div
+      className={`graph-node ${node.type}-node ${
+        node.type === 'threat' ? getRiskClass(node.data as Threat) : ''
+      } ${isSelected ? 'selected' : ''} fade-in`}
+      style={{
+        left: `${node.x}px`,
+        top: `${node.y}px`,
+      }}
+      onClick={onClick}
+    >
+      {node.type === 'process' ? (
+        <div>
+          <div className="process-name">{(node.data as Process).name}</div>
+          <div className="process-sid">{(node.data as Process).sid}</div>
+        </div>
+      ) : (
+        <div>
+          <div className="threat-type">{(node.data as Threat).type}</div>
+          <div className="threat-scenario">
+            {(node.data as Threat).scenario.substring(0, 50)}...
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
+
+// Компонент соединительной линии
+const ConnectionLine: React.FC<{
+  from: GraphNode;
+  to: GraphNode;
+  isActive: boolean;
+}> = ({ from, to, isActive }) => {
+  const length = Math.sqrt(
+    Math.pow(to.x - from.x, 2) + Math.pow(to.y - from.y, 2)
+  );
+  const angle = Math.atan2(to.y - from.y, to.x - from.x) * (180 / Math.PI);
 
   return (
-    <div className="time-metrics-container">
-      <div className="metrics-timeline">
-        <div className="timeline-labels">
-          {timeLabels.map((hours, index) => (
-            <div key={index}>{hours < 1 ? hours.toFixed(1) : Math.round(hours)}ч</div>
-          ))}
-        </div>
-        <div className="timeline-grid">
-          {timeLabels.map((_, index) => (
-            <div key={index} className="grid-line" 
-              style={{ left: `${(index / (timeLabels.length - 1)) * 100}%` }}></div>
-          ))}
-        </div>
-        <div className="timeline-metrics">
-          <div className="metrics-boundaries">
-            <div className="metric rto" style={{ left: `${(rto / maxHours) * 100}%` }}>
-              <div className="metric-line"></div>
-              <div className="metric-label">RTO {rto < 1 ? rto.toFixed(1) : Math.round(rto)}ч</div>
-            </div>
-            <div className="metric mtpd" style={{ left: `${(mtpd / maxHours) * 100}%` }}>
-              <div className="metric-line"></div>
-              <div className="metric-label">MTPD {mtpd < 1 ? mtpd.toFixed(1) : Math.round(mtpd)}ч</div>
-            </div>
-            <div className="metric mtpd-critical" style={{ left: `${(mtpdCritical / maxHours) * 100}%` }}>
-              <div className="metric-line"></div>
-              <div className="metric-label">MTPD*1.3 {mtpdCritical < 1 ? mtpdCritical.toFixed(1) : Math.round(mtpdCritical)}ч</div>
-            </div>
-          </div>
-          <div className="metrics-current">
-            <div className="metric tr" style={{ left: `${(tr / maxHours) * 100}%` }}>
-              <div className="metric-line"></div>
-              <div className="metric-label">TR {tr < 1 ? tr.toFixed(1) : Math.round(tr)}ч</div>
-            </div>
-          </div>
-        </div>
+    <div
+      className={`connection-line ${isActive ? 'active' : ''}`}
+      style={{
+        left: `${from.x + 100}px`, // смещение к центру узла
+        top: `${from.y + 50}px`,
+        width: `${length}px`,
+        transform: `rotate(${angle}deg)`,
+      }}
+    />
+  );
+};
+
+// Компонент детальной панели
+const DetailPanel: React.FC<{
+  isOpen: boolean;
+  onClose: () => void;
+  selectedItem: Process | Threat | null;
+  riskDetails: RiskDetail | null;
+  detailedReports: DetailedRiskReport[];
+}> = ({ isOpen, onClose, selectedItem, riskDetails, detailedReports }) => {
+  if (!selectedItem) return null;
+
+  const isProcess = 'sid' in selectedItem;
+
+  return (
+    <div className={`detail-panel ${isOpen ? 'open' : ''}`}>
+      <div className="detail-panel-header">
+        <h3 className="detail-panel-title">
+          {isProcess ? 'Детали процесса' : 'Детали угрозы'}
+        </h3>
+        <button className="detail-panel-close" onClick={onClose}>
+          ×
+        </button>
+      </div>
+      
+      <div className="detail-content">
+        {isProcess ? (
+          <ProcessDetails process={selectedItem as Process} />
+        ) : (
+          <ThreatDetails 
+            threat={selectedItem as Threat} 
+            riskDetails={riskDetails}
+            detailedReports={detailedReports}
+          />
+        )}
       </div>
     </div>
   );
 };
 
+// Компонент деталей процесса
+const ProcessDetails: React.FC<{ process: Process }> = ({ process }) => (
+  <div className="slide-in">
+    <div className="metrics-grid">
+      <div className="metric-card">
+        <span className="metric-value">{process.rating}</span>
+        <span className="metric-label">Рейтинг</span>
+      </div>
+    </div>
+    
+    <div className="detail-section">
+      <h4>Информация о процессе</h4>
+      <p><strong>Код:</strong> {process.sid}</p>
+      <p><strong>Название:</strong> {process.name}</p>
+      <p><strong>Владелец:</strong> {process.owner_block}</p>
+      <p><strong>Отдел:</strong> {process.department}</p>
+      <p>
+        <strong>Уровень риска:</strong> 
+        <span className={`status-badge ${
+          process.risk_label.includes('Высокий') ? 'status-high' : 'status-low'
+        }`}>
+          {process.risk_label}
+        </span>
+      </p>
+    </div>
+  </div>
+);
+
+// Компонент деталей угрозы
+const ThreatDetails: React.FC<{
+  threat: Threat;
+  riskDetails: RiskDetail | null;
+  detailedReports: DetailedRiskReport[];
+}> = ({ threat, riskDetails, detailedReports }) => (
+  <div className="slide-in">
+    {riskDetails && (
+      <div className="metrics-grid">
+        <div className="metric-card">
+          <span className="metric-value">{riskDetails.rto_hours}</span>
+          <span className="metric-label">RTO (часы)</span>
+        </div>
+        <div className="metric-card">
+          <span className="metric-value">{riskDetails.mtpd}</span>
+          <span className="metric-label">MTPD</span>
+        </div>
+        <div className="metric-card">
+          <span className="metric-value">{riskDetails.tr}</span>
+          <span className="metric-label">TR</span>
+        </div>
+      </div>
+    )}
+    
+    <div className="detail-section">
+      <h4>Информация об угрозе</h4>
+      <p><strong>Тип:</strong> {threat.type}</p>
+      <p><strong>Сценарий:</strong> {threat.scenario}</p>
+      <p>
+        <strong>Интегральный риск:</strong>
+        <span className={`status-badge ${getStatusClass(threat.integral_risk_level)}`}>
+          {threat.integral_risk_level}
+        </span>
+      </p>
+      <p>
+        <strong>Высший уровень риска:</strong>
+        <span className={`status-badge ${getStatusClass(threat.highest_risk_level)}`}>
+          {threat.highest_risk_level}
+        </span>
+      </p>
+      {threat.threat_rating && (
+        <p>
+          <strong>Рейтинг угрозы:</strong>
+          <span className={`status-badge ${getStatusClass(threat.threat_rating)}`}>
+            {threat.threat_rating}
+          </span>
+        </p>
+      )}
+    </div>
+
+    {riskDetails && (
+      <div className="detail-section">
+        <h4>Детали риска</h4>
+        <p><strong>Резервирование в РСОД:</strong> {riskDetails.as_reserved_in_rcod}</p>
+        <p><strong>Метка риска:</strong> {riskDetails.risk_label}</p>
+        {riskDetails.high_risk_count && (
+          <p><strong>Количество высоких рисков:</strong> {riskDetails.high_risk_count}</p>
+        )}
+        {riskDetails.total_risk_count && (
+          <p><strong>Общее количество рисков:</strong> {riskDetails.total_risk_count}</p>
+        )}
+      </div>
+    )}
+
+    {detailedReports.length > 0 && (
+      <div className="detail-section">
+        <h4>Детальные отчеты ({detailedReports.length})</h4>
+        <div className="reports-list">
+          {detailedReports.slice(0, 3).map((report, index) => (
+            <div key={report.id} className="report-card">
+              <p><strong>Тип воздействия:</strong> {report.impact_type}</p>
+              <p><strong>Подкатегория риска:</strong> {report.risk_subcategory}</p>
+              <p>
+                <strong>Уровень риска:</strong>
+                <span className={`status-badge ${getStatusClass(report.risk_level)}`}>
+                  {report.risk_level}
+                </span>
+              </p>
+            </div>
+          ))}
+          {detailedReports.length > 3 && (
+            <p className="more-reports">
+              +{detailedReports.length - 3} дополнительных отчетов
+            </p>
+          )}
+        </div>
+      </div>
+    )}
+  </div>
+);
+
+// Утилитарная функция для определения класса статуса
+const getStatusClass = (level: string): string => {
+  if (!level) return '';
+  const l = level.toLowerCase();
+  if (l.includes('критический')) return 'status-critical';
+  if (l.includes('высокий')) return 'status-high';
+  if (l.includes('средний')) return 'status-medium';
+  if (l.includes('низкий')) return 'status-low';
+  return '';
+};
+
+// Главный компонент App
 function App() {
   const [isLoggedIn, setIsLoggedIn] = useState<boolean>(!!localStorage.getItem('token'));
   const [processes, setProcesses] = useState<Process[]>([]);
@@ -157,10 +331,19 @@ function App() {
   const [fullName, setFullName] = useState<string>('');
   const [detailedRisks, setDetailedRisks] = useState<DetailedRiskReport[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
+  const [isDetailPanelOpen, setIsDetailPanelOpen] = useState(false);
+  const [selectedItem, setSelectedItem] = useState<Process | Threat | null>(null);
 
+  // Состояние для графового представления
+  const [graphNodes, setGraphNodes] = useState<GraphNode[]>([]);
+  const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
+
+  // Загрузка данных пользователя и процессов
   useEffect(() => {
     if (!isLoggedIn) return;
 
+    // Загрузка информации о пользователе
     fetch('http://localhost:8000/users/me', {
       headers: {
         'Authorization': `Bearer ${localStorage.getItem('token')}`
@@ -173,6 +356,7 @@ function App() {
       .then(userData => setFullName(userData.full_name || ''))
       .catch(() => setFullName(''));
 
+    // Загрузка процессов
     fetch('http://localhost:8000/processes', {
       headers: {
         'Authorization': `Bearer ${localStorage.getItem('token')}`
@@ -190,6 +374,43 @@ function App() {
       .catch(err => setError('Не удалось загрузить список процессов.'));
   }, [isLoggedIn]);
 
+  // Создание графового представления
+  const createGraphNodes = useCallback((process: Process, threats: Threat[]) => {
+    const nodes: GraphNode[] = [];
+    
+    // Центральный узел процесса
+    const processNode: GraphNode = {
+      id: `process-${process.sid}`,
+      type: 'process',
+      x: 400, // центр экрана
+      y: 200,
+      data: process,
+      connections: threats.map(t => `threat-${t.id}`)
+    };
+    nodes.push(processNode);
+
+    // Узлы угроз вокруг процесса
+    threats.forEach((threat, index) => {
+      const angle = (index / threats.length) * 2 * Math.PI;
+      const radius = 300;
+      const x = 400 + Math.cos(angle) * radius;
+      const y = 200 + Math.sin(angle) * radius;
+
+      const threatNode: GraphNode = {
+        id: `threat-${threat.id}`,
+        type: 'threat',
+        x: Math.max(50, Math.min(x, 800)), // ограничиваем позиции
+        y: Math.max(50, Math.min(y, 400)),
+        data: threat,
+        connections: [`process-${process.sid}`]
+      };
+      nodes.push(threatNode);
+    });
+
+    return nodes;
+  }, []);
+
+  // Поиск процессов
   const handleProcessSearch = (query: string) => {
     const lowercaseQuery = query.toLowerCase();
     const filtered = processes.filter(process =>
@@ -202,24 +423,40 @@ function App() {
     setFilteredProcesses(sorted);
   };
 
+  // Загрузка угроз для выбранного процесса
   useEffect(() => {
-    if (!isLoggedIn) return;
+    if (!isLoggedIn || !selectedProcess) {
+      setThreats([]);
+      setGraphNodes([]);
+      return;
+    }
+
     setThreats([]);
     setSelectedThreat(null);
     setSelectedThreatDetails(null);
     setDetailedRisks([]);
     setError(null);
 
-    selectedProcess && fetch(`http://localhost:8000/threats/${selectedProcess.sid}`, {
+    fetch(`http://localhost:8000/threats/${selectedProcess.sid}`, {
       headers: {
         'Authorization': `Bearer ${localStorage.getItem('token')}`
       }
     })
       .then(response => response.json())
-      .then(data => setThreats(data || []))
+      .then(data => {
+        const threatsArray = data || [];
+        setThreats(threatsArray);
+        
+        // Создаем граф только если есть угрозы
+        if (threatsArray.length > 0) {
+          const nodes = createGraphNodes(selectedProcess, threatsArray);
+          setGraphNodes(nodes);
+        }
+      })
       .catch(err => setError('Не удалось загрузить угрозы для процесса.'));
-  }, [selectedProcess, isLoggedIn]);
+  }, [selectedProcess, isLoggedIn, createGraphNodes]);
 
+  // Загрузка деталей угрозы
   useEffect(() => {
     if (!isLoggedIn || !selectedThreat) return;
     
@@ -246,7 +483,7 @@ function App() {
         
         setSelectedThreatDetails(details);
         setDetailedRisks(Array.isArray(reports) ? reports : [reports]);
-      } catch (err) {
+      } catch (err: any) {
         setError(err.message);
       }
     };
@@ -254,214 +491,157 @@ function App() {
     fetchData();
   }, [selectedThreat, isLoggedIn]);
 
-  const getRiskColor = (level: string | undefined | null): string => {
-    if (!level) return '#6c757d';
-    const l = level.toLowerCase();
-    if (l.includes('критический')) return '#dc3545';
-    if (l.includes('высокий')) return '#ffc107';
-    if (l.includes('средний')) return '#fd7e14';
-    if (l.includes('низкий')) return '#28a745';
-    return '#6c757d';
+  // Обработка клика по узлу графа
+  const handleNodeClick = (node: GraphNode) => {
+    setSelectedNodeId(node.id);
+    
+    if (node.type === 'process') {
+      setSelectedItem(node.data as Process);
+    } else {
+      setSelectedThreat(node.data as Threat);
+      setSelectedItem(node.data as Threat);
+    }
+    
+    setIsDetailPanelOpen(true);
   };
 
-  if (!isLoggedIn) return <Login onLoginSuccess={() => setIsLoggedIn(true)} />;
+  // Выход из системы
+  const handleLogout = () => {
+    localStorage.removeItem('token');
+    setIsLoggedIn(false);
+    setFullName('');
+    setProcesses([]);
+    setFilteredProcesses([]);
+    setSelectedProcess(null);
+    setGraphNodes([]);
+    setSelectedNodeId(null);
+    setSelectedItem(null);
+    setIsDetailPanelOpen(false);
+  };
+
+  if (!isLoggedIn) {
+    return <Login onLoginSuccess={() => setIsLoggedIn(true)} />;
+  }
 
   return (
     <div className="App">
-      <header style={{ 
-        display: 'flex', 
-        justifyContent: 'space-between', 
-        alignItems: 'center', 
-        padding: '10px 20px', 
-        backgroundColor: '#f5f5f5', 
-        boxShadow: '0 2px 4px rgba(0,0,0,0.1)',
-        position: 'fixed',
-        top: 0,
-        left: 0,
-        right: 0,
-        zIndex: 1000
-      }}>
-        <div style={{ fontWeight: 'bold', fontSize: '20px' }}>Риски по процессам</div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '20px' }}>
-          <div style={{ fontWeight: 'bold', fontSize: '16px', color: '#333' }}>
-            {fullName}
-          </div>
-          <button
-            onClick={() => {
-              localStorage.removeItem('token');
-              setIsLoggedIn(false);
-              setFullName('');
-              setProcesses([]);
-              setFilteredProcesses([]);
-              setSelectedProcess(null);
-            }}
-            style={{
-              padding: '6px 12px',
-              fontSize: '14px',
-              cursor: 'pointer',
-              backgroundColor: '#007bff',
-              color: '#fff',
-              border: 'none',
-              borderRadius: '4px'
-            }}
-          >
+      {/* Заголовок */}
+      <header className="app-header">
+        <div className="app-title">
+          Система управления рисками
+        </div>
+        <div className="user-section">
+          <div className="user-name">{fullName}</div>
+          <button className="logout-btn" onClick={handleLogout}>
             Выйти
           </button>
         </div>
       </header>
 
-      <div className="main-container" style={{ marginTop: '60px', display: 'flex' }}>
-        <div className="sidebar">
-          <h2>Процессы</h2>
-          <ProcessSearch onSearch={handleProcessSearch} />
+      <div className="main-container">
+        {/* Боковая панель */}
+        <div className={`sidebar ${isMobileMenuOpen ? 'mobile-open' : ''}`}>
+          <div className="sidebar-header">
+            <h2 className="sidebar-title">Процессы</h2>
+            <ProcessSearch onSearch={handleProcessSearch} />
+          </div>
+          
           <div className="process-list">
-            {filteredProcesses.map(p => (
+            {filteredProcesses.map(process => (
               <div
-                key={p.sid}
-                className={`process-item ${selectedProcess?.sid === p.sid ? 'selected' : ''}`}
-                onClick={() => setSelectedProcess(p)}
+                key={process.sid}
+                className={`process-item ${selectedProcess?.sid === process.sid ? 'selected' : ''}`}
+                onClick={() => {
+                  setSelectedProcess(process);
+                  setIsMobileMenuOpen(false);
+                }}
               >
-                <div className="process-name">{p.name}</div>
-                <div className="process-sid">{p.sid}</div>
+                <div className="process-name">{process.name}</div>
+                <div className="process-sid">{process.sid}</div>
               </div>
             ))}
           </div>
         </div>
 
+        {/* Основной контент */}
         <div className="main-content">
-          {selectedProcess ? (
-            <>
-              <h2>Угрозы для: {selectedProcess.name}</h2>
-              <div className="threats-container" style={{ display: 'flex', flexWrap: 'wrap', gap: '10px' }}>
-                {threats.map(threat => (
-                  <div
-                    key={`${threat.process_sid}-${threat.type}-${threat.scenario}`}
-                    className={`threat-card ${
-                      selectedThreat?.process_sid === threat.process_sid &&
-                      selectedThreat?.type === threat.type &&
-                      selectedThreat?.scenario === threat.scenario
-                        ? 'selected'
-                        : ''
-                    }`}
-                    style={{ 
-                      flex: selectedThreat && !(
-                        selectedThreat?.process_sid === threat.process_sid &&
-                        selectedThreat?.type === threat.type &&
-                        selectedThreat?.scenario === threat.scenario
-                      ) ? '1 1 30%' : '3 1 60%',
-                      opacity: selectedThreat && !(
-                        selectedThreat?.process_sid === threat.process_sid &&
-                        selectedThreat?.type === threat.type &&
-                        selectedThreat?.scenario === threat.scenario
-                      ) ? 0.7 : 1,
-                      transition: 'all 0.3s ease',
-                      borderLeft: `5px solid ${getRiskColor(threat.integral_risk_level)}`,
-                      backgroundColor: '#fff'
-                    }}
-                    onClick={() => setSelectedThreat(threat)}
-                  >
-                    <div className="threat-header">
-                      <h3>{threat.type}</h3>
-                      <div
-                        className="threat-rating"
-                        style={{
-                          backgroundColor: threat.threat_rating_color || getRiskColor(threat.threat_rating),
-                        }}
-                      >
-                        {threat.threat_rating || 'Нет данных'}
-                      </div>
-                    </div>
-                    <p className="threat-scenario">{threat.scenario}</p>
-                    <div className="threat-risks">
-                      <div className="risk-item integral-risk">
-                        <strong>Интегральный риск:</strong>
-                        <span
-                          style={{
-                            color: getRiskColor(threat.integral_risk_level),
-                            fontWeight: 'bold',
-                          }}
-                        >
-                          {threat.integral_risk_level}
-                        </span>
-                      </div>
-                      <div className="risk-item highest-risk">
-                        <strong>Уровень наиболее высокого риска:</strong>
-                        <span style={{ color: getRiskColor(threat.highest_risk_level) }}>
-                          {threat.highest_risk_level}
-                        </span>
-                      </div>
-                    </div>
-                  </div>
+          {selectedProcess && graphNodes.length > 0 ? (
+            <div className="process-graph-container">
+              <div className="graph-header">
+                <h2 className="graph-title">{selectedProcess.name}</h2>
+                <p className="graph-subtitle">
+                  Интерактивная схема процесса и связанных угроз
+                </p>
+              </div>
+              
+              <div className="graph-area" style={{ position: 'relative', height: 'calc(100% - 100px)', padding: '20px' }}>
+                {/* Соединительные линии */}
+                {graphNodes
+                  .filter(node => node.type === 'process')
+                  .map(processNode =>
+                    graphNodes
+                      .filter(node => node.type === 'threat')
+                      .map(threatNode => (
+                        <ConnectionLine
+                          key={`${processNode.id}-${threatNode.id}`}
+                          from={processNode}
+                          to={threatNode}
+                          isActive={selectedNodeId === processNode.id || selectedNodeId === threatNode.id}
+                        />
+                      ))
+                  )}
+
+                {/* Узлы графа */}
+                {graphNodes.map(node => (
+                  <GraphNode
+                    key={node.id}
+                    node={node}
+                    isSelected={selectedNodeId === node.id}
+                    onClick={() => handleNodeClick(node)}
+                  />
                 ))}
               </div>
-              <hr />
-            </>
+            </div>
+          ) : selectedProcess ? (
+            <div className="placeholder">
+              <div className="placeholder-icon">📊</div>
+              <h3 className="placeholder-title">Загрузка данных...</h3>
+              <p className="placeholder-text">
+                Загружаем информацию об угрозах для выбранного процесса
+              </p>
+            </div>
           ) : (
-            <div className="placeholder">Выберите процесс для просмотра информации.</div>
+            <div className="placeholder">
+              <div className="placeholder-icon">🔍</div>
+              <h3 className="placeholder-title">Выберите процесс</h3>
+              <p className="placeholder-text">
+                Выберите процесс из списка слева для просмотра связанных с ним угроз и рисков
+              </p>
+            </div>
+          )}
+
+          {error && (
+            <div className="error-message">
+              {error}
+            </div>
           )}
         </div>
       </div>
 
-      {/* Модальное окно для деталей риска */}
-      {selectedThreat && (
-        <div 
-          style={{
-            position: 'fixed',
-            top: 0,
-            left: 0,
-            right: 0,
-            bottom: 0,
-            backgroundColor: 'rgba(0,0,0,0.5)',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            zIndex: 1001
-          }}
-          onClick={() => setSelectedThreat(null)}
-        >
-          <div 
-            style={{
-              backgroundColor: 'white',
-              padding: '20px',
-              borderRadius: '8px',
-              maxWidth: '90%',
-              maxHeight: '90%',
-              overflow: 'auto',
-              position: 'relative'
-            }}
-            onClick={(e) => e.stopPropagation()}
-          >
-            <button 
-              style={{
-                position: 'absolute',
-                right: '10px',
-                top: '10px',
-                background: 'none',
-                border: 'none',
-                fontSize: '24px',
-                cursor: 'pointer',
-                color: '#666'
-              }}
-              onClick={() => setSelectedThreat(null)}
-            >
-              ×
-            </button>
-            <div className="details-container">
-              {error ? (
-                <div className="error-message">{error}</div>
-              ) : (
-                <>
-                  <RiskDetails riskDetails={selectedThreatDetails} />
-                  <DetailedRisks detailedRisks={detailedRisks} />
-                </>
-              )}
-            </div>
-          </div>
-        </div>
-      )}
+      {/* Детальная панель */}
+      <DetailPanel
+        isOpen={isDetailPanelOpen}
+        onClose={() => {
+          setIsDetailPanelOpen(false);
+          setSelectedItem(null);
+          setSelectedNodeId(null);
+        }}
+        selectedItem={selectedItem}
+        riskDetails={selectedThreatDetails}
+        detailedReports={detailedRisks}
+      />
     </div>
   );
 }
 
-export { TimeMetricsVisualizer };
 export default App;
