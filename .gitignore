@@ -1,0 +1,5 @@
+/backend/__pycache__
+/backend/data_management/__pycache__
+/backend/venv
+/backend/risks.db
+/frontend/node_modules
